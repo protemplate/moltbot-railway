@@ -97,10 +97,12 @@ const AUTH_GROUPS = [
     description: 'Claude Opus, Sonnet, Haiku',
     emoji: '\u{1F9E0}',
     options: [
-      { label: 'API Key', value: 'anthropic-api-key', flag: '--anthropic-api-key' },
+      { label: 'API Key', value: 'anthropic-api-key', flag: '--anthropic-api-key',
+        hint: 'Direct API access, billed per-token (console.anthropic.com)' },
       { label: 'Setup Token', value: 'setup-token',
         flag: ['--auth-choice', 'token', '--token-provider', 'anthropic'],
-        secretFlag: '--token' }
+        secretFlag: '--token',
+        hint: 'Use your Claude Pro/Max subscription (paste a setup token)' }
     ]
   },
   {
@@ -109,7 +111,8 @@ const AUTH_GROUPS = [
     description: 'GPT-4o, o1, o3, DALL-E',
     emoji: '\u{1F916}',
     options: [
-      { label: 'API Key', value: 'openai-api-key', flag: '--openai-api-key' },
+      { label: 'OpenAI API Key', value: 'openai-api-key', flag: '--openai-api-key',
+        hint: 'Direct API access, billed per-token (platform.openai.com)' },
       // ChatGPT/Codex subscription via device-code pairing.
       // The plain 'openai-codex' (browser loopback redirect) cannot work on a headless
       // Railway container — it requires a local browser + localhost callback. The device-code
@@ -119,10 +122,12 @@ const AUTH_GROUPS = [
       // NOT the non-interactive /onboard/api/run path.
       { label: 'Codex Subscription (Device Pairing)', value: 'openai-codex-device-code',
         deviceCode: true,
-        noSecret: true },
-      { label: 'Codex API Key Backup', value: 'openai-codex-api-key',
-        flag: ['--auth-choice', 'openai-codex-api-key'],
-        secretFlag: '--openai-codex-api-key' }
+        noSecret: true,
+        hint: 'Use your ChatGPT/Codex plan — sign in with a code, no key' }
+      // Note: the advanced "openai-codex-api-key" backup (an OpenAI API key used as a
+      // fallback for the Codex subscription) is intentionally omitted here — OpenClaw marks
+      // it manual-only and it's confusing as a standalone choice. Add it post-setup via the
+      // terminal if needed: openclaw onboard --auth-choice openai-codex-api-key --openai-codex-api-key <key>
     ]
   },
   {
@@ -152,10 +157,12 @@ const AUTH_GROUPS = [
     options: [
       { label: 'API Key', value: 'minimax-api-key',
         flag: ['--auth-choice', 'minimax-api-key'],
-        secretFlag: '--minimax-api-key' },
+        secretFlag: '--minimax-api-key',
+        hint: 'Direct API access with a MiniMax API key' },
       { label: 'Coding Plan (OAuth)', value: 'minimax-portal',
         flag: ['--auth-choice', 'minimax-portal'],
-        noSecret: true }
+        noSecret: true,
+        hint: 'Use your MiniMax coding subscription' }
     ]
   },
   {

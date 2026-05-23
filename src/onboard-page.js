@@ -444,12 +444,13 @@ export function getSetupPageHTML({ isConfigured, gatewayInfo, password, stateDir
     }
     .radio-group {
       display: flex;
-      gap: 12px;
+      flex-direction: column;
+      gap: 10px;
     }
     .radio-option {
       display: flex;
-      align-items: center;
-      gap: 6px;
+      align-items: flex-start;
+      gap: 8px;
       cursor: pointer;
       font-size: 14px;
       color: var(--text);
@@ -458,7 +459,23 @@ export function getSetupPageHTML({ isConfigured, gatewayInfo, password, stateDir
       accent-color: var(--accent);
       width: 16px;
       height: 16px;
+      margin-top: 1px;
       cursor: pointer;
+      flex: none;
+    }
+    .radio-text {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .radio-label {
+      font-size: 14px;
+      color: var(--text);
+    }
+    .radio-hint {
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.3;
     }
     .form-group {
       margin-bottom: 16px;
@@ -1970,7 +1987,19 @@ export function getSetupPageHTML({ isConfigured, gatewayInfo, password, stateDir
               updateSecretField();
             };
             label.appendChild(radio);
-            label.appendChild(document.createTextNode(opt.label));
+            var textWrap = document.createElement('span');
+            textWrap.className = 'radio-text';
+            var lbl = document.createElement('span');
+            lbl.className = 'radio-label';
+            lbl.textContent = opt.label;
+            textWrap.appendChild(lbl);
+            if (opt.hint) {
+              var hintEl = document.createElement('span');
+              hintEl.className = 'radio-hint';
+              hintEl.textContent = opt.hint;
+              textWrap.appendChild(hintEl);
+            }
+            label.appendChild(textWrap);
             radioGroup.appendChild(label);
           });
         }
