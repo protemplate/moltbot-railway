@@ -2711,8 +2711,8 @@ export function getSetupPageHTML({ isConfigured, gatewayInfo, password, stateDir
 
       function finishDevicePairing() {
         setPairStatus('Pairing approved — applying configuration…', 'success');
-        // Ensure the primary model is a Codex model, then restart the gateway so it loads
-        // the new openai-codex profile.
+        // Point the primary model at the openai-codex provider, then restart the gateway so
+        // it loads the new openai-codex OAuth profile.
         fetch('/lite/api/config?password=' + encodeURIComponent(password))
           .then(function(r) { return r.json(); })
           .then(function(cfg) {
@@ -2720,9 +2720,17 @@ export function getSetupPageHTML({ isConfigured, gatewayInfo, password, stateDir
             cfg.agents = cfg.agents || {};
             cfg.agents.defaults = cfg.agents.defaults || {};
             cfg.agents.defaults.model = cfg.agents.defaults.model || {};
-            var primary = cfg.agents.defaults.model.primary;
-            if (!primary || String(primary).indexOf('openai-codex/') !== 0) {
-              cfg.agents.defaults.model.primary = 'openai-codex/gpt-5.1-codex';
+            var primary = String(cfg.agents.defaults.model.primary || '');
+            // openclaw quickstart writes "openai/<model>" for the ChatGPT/Codex
+            // subscription, but the openai provider needs an OpenAI API key. Re-point to
+            // the openai-codex provider (the device-code subscription) while keeping the
+            // model id quickstart chose (e.g. gpt-5.5). Codex models live under openai-codex
+            // (gpt-5.5, gpt-5.4, ...), so do NOT invent a model id.
+            if (primary.indexOf('openai-codex/') !== 0) {
+              var newPrimary = primary.indexOf('openai/') === 0
+                ? 'openai-codex/' + primary.slice('openai/'.length)
+                : 'openai-codex/gpt-5.5';
+              cfg.agents.defaults.model.primary = newPrimary;
               return fetch('/lite/api/config?password=' + encodeURIComponent(password), {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(cfg)
