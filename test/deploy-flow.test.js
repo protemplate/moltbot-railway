@@ -129,4 +129,24 @@ describe('E2E deploy flow', { timeout: 30000 }, () => {
       assert.equal(config.channels.slack.appToken, CHANNEL_FIXTURES.slack.appToken);
     });
   });
+
+  describe('device-code auth choice', () => {
+    it('rejects deviceCode choices on the non-interactive run endpoint', async () => {
+      const res = await fetch(
+        `http://127.0.0.1:${server.port}/onboard/api/run?password=test-password`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ authChoice: 'openai-codex-device-code' }),
+        }
+      );
+      assert.equal(res.status, 400, 'device-code choice should be rejected with 400');
+      const body = await res.json();
+      assert.equal(body.success, false);
+      assert.ok(
+        body.logs.join(' ').toLowerCase().includes('device pairing'),
+        `expected a device-pairing message, got: ${JSON.stringify(body.logs)}`
+      );
+    });
+  });
 });

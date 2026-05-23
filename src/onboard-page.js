@@ -1007,7 +1007,40 @@ export function getSetupPageHTML({ isConfigured, gatewayInfo, password, stateDir
 
     /* Hidden file input */
     input.restore-file-input { display: none; }
+
+    /* Device-code pairing panel */
+    #device-pairing { display: none; }
+    .pair-card {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      background: var(--card-2, rgba(255,255,255,0.02));
+      margin-bottom: 16px;
+    }
+    .pair-step { display: flex; align-items: center; gap: 12px; margin: 12px 0; flex-wrap: wrap; }
+    .pair-num {
+      flex: none; width: 26px; height: 26px; border-radius: 50%;
+      background: var(--accent, #ff5a2d); color: #fff;
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 700; font-size: 14px;
+    }
+    .pair-code {
+      font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 28px; font-weight: 700; letter-spacing: 4px;
+      padding: 8px 16px; border-radius: 8px;
+      background: rgba(255,255,255,0.06); border: 1px solid var(--border);
+      user-select: all;
+    }
+    .pair-code.waiting { opacity: 0.5; font-size: 16px; letter-spacing: normal; }
+    #device-term {
+      margin-top: 16px; border-radius: 8px; overflow: hidden;
+      background: #12141a; min-height: 220px;
+    }
+    .pair-status { margin-top: 12px; font-size: 14px; color: var(--muted); }
+    .pair-status.success { color: #10b981; }
+    .pair-status.error { color: #ef4444; }
   </style>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/css/xterm.min.css"/>
 </head>
 <body>
 
@@ -1220,6 +1253,35 @@ export function getSetupPageHTML({ isConfigured, gatewayInfo, password, stateDir
             <a href="/openclaw" class="btn btn-secondary" data-i18n="step5.success.openDashboard">Open OpenClaw Gateway Dashboard</a>
           </div>
         </div>
+
+        <!-- Device-code pairing (ChatGPT/Codex). Shown instead of the normal deploy flow
+             when the selected auth choice is interactive device pairing. -->
+        <div id="device-pairing">
+          <div class="pair-card">
+            <h2 class="success-heading" style="margin-top:0">Pair your ChatGPT / Codex account</h2>
+            <div class="pair-step">
+              <span class="pair-num">1</span>
+              <span>Open the OpenAI pairing page:</span>
+              <a id="pair-url" href="#" target="_blank" rel="noopener" class="btn btn-primary">Open auth page</a>
+            </div>
+            <div class="pair-step">
+              <span class="pair-num">2</span>
+              <span>Enter this code, then sign in with your ChatGPT/Codex subscription:</span>
+              <span id="pair-code" class="pair-code waiting">starting…</span>
+            </div>
+            <div class="pair-step">
+              <span class="pair-num">3</span>
+              <span>Keep this tab open — it finishes automatically once you approve.</span>
+            </div>
+            <div id="pair-status" class="pair-status">Connecting to the pairing terminal…</div>
+            <div id="device-term"></div>
+          </div>
+          <div class="success-links" id="pair-done-links" style="display:none">
+            <a href="/lite?password=${encodeURIComponent(password)}" class="btn btn-primary">Open Lite Panel</a>
+            <a href="/openclaw" class="btn btn-secondary">Open OpenClaw Gateway Dashboard</a>
+          </div>
+          <button class="btn-primary hidden" id="pair-retry-btn" onclick="deploy()" style="margin-top:12px">Retry pairing</button>
+        </div>
       </div>
       <div class="wizard-nav" id="step5-nav">
         <button class="btn-secondary" id="step5-back" onclick="goToStep(4)" data-i18n="nav.back">&larr; Back</button>
@@ -1228,6 +1290,9 @@ export function getSetupPageHTML({ isConfigured, gatewayInfo, password, stateDir
     </div>
   </div>
 
+  <!-- xterm.js for the Codex device-pairing terminal (loaded once, used on demand) -->
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0/lib/addon-fit.min.js"></script>
   <script>
     (function() {
       var password = ${JSON.stringify(password)};
@@ -1774,6 +1839,15 @@ export function getSetupPageHTML({ isConfigured, gatewayInfo, password, stateDir
         var opts = authGroups[selectedProviderIndex].options;
         for (var i = 0; i < opts.length; i++) {
           if (opts[i].value === selectedAuthChoice) return !!(opts[i].secretOptional);
+        }
+        return false;
+      }
+
+      function isDeviceCodeChoice() {
+        if (selectedProviderIndex === null || selectedAuthChoice === null) return false;
+        var opts = authGroups[selectedProviderIndex].options;
+        for (var i = 0; i < opts.length; i++) {
+          if (opts[i].value === selectedAuthChoice) return !!(opts[i].deviceCode);
         }
         return false;
       }
@@ -2432,6 +2506,13 @@ export function getSetupPageHTML({ isConfigured, gatewayInfo, password, stateDir
       window.deploy = function() {
         wizardLocked = true;
 
+        // Interactive device-code pairing (ChatGPT/Codex) can't run through the
+        // non-interactive /onboard/api/run endpoint — drive it via the PTY terminal instead.
+        if (isDeviceCodeChoice()) {
+          runDeviceCodePairing();
+          return;
+        }
+
         var deployArea = document.getElementById('deploy-area');
         var progress = document.getElementById('deploy-progress');
         var success = document.getElementById('deploy-success');
@@ -2514,6 +2595,152 @@ export function getSetupPageHTML({ isConfigured, gatewayInfo, password, stateDir
       window.retryDeploy = function() {
         deploy();
       };
+
+      // ========== Codex device-code pairing ==========
+      var pairWs = null;
+      var pairTerm = null;
+      var pairFit = null;
+      var pairBuf = '';
+      var pairUrlFound = false;
+      var pairCodeFound = false;
+
+      function stripAnsi(s) {
+        return s.replace(/\\x1b\\[[0-9;?]*[A-Za-z]/g, '').replace(/\\x1b\\][^\\x07]*(\\x07|\\x1b\\\\)/g, '');
+      }
+
+      function setPairStatus(msg, cls) {
+        var el = document.getElementById('pair-status');
+        if (!el) return;
+        el.textContent = msg;
+        el.className = 'pair-status' + (cls ? ' ' + cls : '');
+      }
+
+      function parsePairOutput(text) {
+        pairBuf += stripAnsi(text);
+        if (pairBuf.length > 20000) pairBuf = pairBuf.slice(-20000);
+        if (!pairUrlFound) {
+          var m = pairBuf.match(/https?:\\/\\/[^\\s"'<>]*codex\\/device[^\\s"'<>]*/i) ||
+                  pairBuf.match(/https?:\\/\\/auth\\.openai\\.com\\/[^\\s"'<>]+/i);
+          if (m) { document.getElementById('pair-url').href = m[0]; pairUrlFound = true; }
+        }
+        if (!pairCodeFound) {
+          var cm = pairBuf.match(/Code:\\s*([A-Z0-9]{3,}-?[A-Z0-9]{2,})/i);
+          if (cm) {
+            var c = document.getElementById('pair-code');
+            c.textContent = cm[1];
+            c.className = 'pair-code';
+            pairCodeFound = true;
+            setPairStatus('Waiting for you to approve in your browser…');
+          }
+        }
+      }
+
+      window.runDeviceCodePairing = function() {
+        document.getElementById('deploy-area').style.display = 'none';
+        document.getElementById('deploy-progress').style.display = 'none';
+        document.getElementById('deploy-success').style.display = 'none';
+        document.getElementById('device-pairing').style.display = 'block';
+        var nav = document.getElementById('step5-nav');
+        if (nav) nav.style.display = 'none';
+        var doneLinks = document.getElementById('pair-done-links');
+        if (doneLinks) doneLinks.style.display = 'none';
+        var retry = document.getElementById('pair-retry-btn');
+        if (retry) retry.classList.add('hidden');
+
+        pairBuf = ''; pairUrlFound = false; pairCodeFound = false;
+        var codeEl = document.getElementById('pair-code');
+        codeEl.textContent = 'starting…'; codeEl.className = 'pair-code waiting';
+        document.getElementById('pair-url').href = '#';
+        setPairStatus('Connecting to the pairing terminal…');
+
+        try {
+          if (pairTerm) { try { pairTerm.dispose(); } catch (e) {} pairTerm = null; }
+          pairTerm = new Terminal({
+            cursorBlink: true, fontSize: 13, scrollback: 1000, convertEol: true,
+            fontFamily: '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace',
+            theme: { background: '#12141a', foreground: '#e4e4e7' }
+          });
+          pairFit = new FitAddon.FitAddon();
+          pairTerm.loadAddon(pairFit);
+          var termEl = document.getElementById('device-term');
+          clearElement(termEl);
+          pairTerm.open(termEl);
+          try { pairFit.fit(); } catch (e) {}
+          pairTerm.onData(function(d) {
+            if (pairWs && pairWs.readyState === WebSocket.OPEN) {
+              pairWs.send(JSON.stringify({ type: 'input', data: d }));
+            }
+          });
+        } catch (e) {
+          setPairStatus('Could not load terminal (' + e.message + ') — pairing details will still appear below.', 'error');
+        }
+
+        var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        var wsUrl = proto + '//' + location.host + '/onboard/ws?cmd=codex-device&password=' + encodeURIComponent(password);
+        pairWs = new WebSocket(wsUrl);
+        pairWs.onopen = function() {
+          setPairStatus('Starting device pairing…');
+          if (pairTerm && pairFit) {
+            try { pairWs.send(JSON.stringify({ type: 'resize', cols: pairTerm.cols, rows: pairTerm.rows })); } catch (e) {}
+          }
+        };
+        pairWs.onmessage = function(ev) {
+          var msg;
+          try { msg = JSON.parse(ev.data); } catch (e) { if (pairTerm) pairTerm.write(ev.data); return; }
+          if (msg.type === 'output') {
+            if (pairTerm) pairTerm.write(msg.data);
+            parsePairOutput(msg.data);
+          } else if (msg.type === 'exit') {
+            if (msg.code === 0) {
+              finishDevicePairing();
+            } else {
+              setPairStatus('Pairing ended (exit code ' + msg.code + '). You can retry.', 'error');
+              var rb = document.getElementById('pair-retry-btn');
+              if (rb) rb.classList.remove('hidden');
+              wizardLocked = false;
+            }
+          }
+        };
+        pairWs.onerror = function() {
+          setPairStatus('Connection error. You can retry.', 'error');
+          var rb = document.getElementById('pair-retry-btn');
+          if (rb) rb.classList.remove('hidden');
+          wizardLocked = false;
+        };
+      };
+
+      function finishDevicePairing() {
+        setPairStatus('Pairing approved — applying configuration…', 'success');
+        // Ensure the primary model is a Codex model, then restart the gateway so it loads
+        // the new openai-codex profile.
+        fetch('/lite/api/config?password=' + encodeURIComponent(password))
+          .then(function(r) { return r.json(); })
+          .then(function(cfg) {
+            cfg = cfg || {};
+            cfg.agents = cfg.agents || {};
+            cfg.agents.defaults = cfg.agents.defaults || {};
+            cfg.agents.defaults.model = cfg.agents.defaults.model || {};
+            var primary = cfg.agents.defaults.model.primary;
+            if (!primary || String(primary).indexOf('openai-codex/') !== 0) {
+              cfg.agents.defaults.model.primary = 'openai-codex/gpt-5.1-codex';
+              return fetch('/lite/api/config?password=' + encodeURIComponent(password), {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(cfg)
+              }).then(function() {});
+            }
+          })
+          .catch(function() {})
+          .then(function() {
+            return fetch('/lite/api/gateway/restart?password=' + encodeURIComponent(password), { method: 'POST' });
+          })
+          .catch(function() {})
+          .then(function() {
+            setPairStatus('Done! Codex is connected and the gateway has restarted.', 'success');
+            var dl = document.getElementById('pair-done-links');
+            if (dl) dl.style.display = 'flex';
+            wizardLocked = false;
+          });
+      }
 
       // ========== Restore from Backup ==========
       function showRestoreToast(message, type) {

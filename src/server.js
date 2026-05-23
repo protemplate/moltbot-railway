@@ -110,9 +110,19 @@ const AUTH_GROUPS = [
     emoji: '\u{1F916}',
     options: [
       { label: 'API Key', value: 'openai-api-key', flag: '--openai-api-key' },
-      { label: 'Codex Subscription', value: 'openai-codex',
-        flag: ['--auth-choice', 'openai-codex'],
-        noSecret: true }
+      // ChatGPT/Codex subscription via device-code pairing.
+      // The plain 'openai-codex' (browser loopback redirect) cannot work on a headless
+      // Railway container — it requires a local browser + localhost callback. The device-code
+      // flow prints a URL + code that the user approves in their own browser while the
+      // container polls. It is interactive-only (refuses --non-interactive), so it runs
+      // through the PTY terminal (see deviceCode handling in onboard-page.js / terminal.js),
+      // NOT the non-interactive /onboard/api/run path.
+      { label: 'Codex Subscription (Device Pairing)', value: 'openai-codex-device-code',
+        deviceCode: true,
+        noSecret: true },
+      { label: 'Codex API Key Backup', value: 'openai-codex-api-key',
+        flag: ['--auth-choice', 'openai-codex-api-key'],
+        secretFlag: '--openai-codex-api-key' }
     ]
   },
   {
@@ -529,6 +539,17 @@ app.post('/onboard/api/run', authMiddleware, async (req, res) => {
   try {
     const { authChoice, authSecret, extraFieldValues, flow, channels: channelPayload, skills } = req.body;
     const logs = [];
+
+    // Device-code auth (e.g. ChatGPT/Codex pairing) is interactive-only: the CLI refuses
+    // --non-interactive and must run in a PTY so the user can approve the code in a browser.
+    // The front-end drives it via /onboard/ws?cmd=codex-device; reject it here so it never
+    // silently runs the wrong (no-auth) onboard command.
+    if (AUTH_OPTION_MAP[authChoice]?.deviceCode) {
+      return res.status(400).json({
+        success: false,
+        logs: [`Auth choice "${authChoice}" uses device pairing and must run in the interactive terminal, not the non-interactive setup endpoint.`]
+      });
+    }
 
     // Build onboard command args
     const onboardArgs = ['--non-interactive', '--accept-risk', '--json'];
