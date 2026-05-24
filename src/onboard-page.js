@@ -2532,12 +2532,36 @@ export function getSetupPageHTML({ isConfigured, gatewayInfo, password, stateDir
       }
 
       // ========== Deploy ==========
+      // Build the channels payload from the enabled channels + their field inputs.
+      function collectChannelsPayload() {
+        var channelsPayload = [];
+        channelGroups.forEach(function(ch) {
+          if (!enabledChannels[ch.name]) return;
+          var fields = {};
+          if (ch.fields) {
+            ch.fields.forEach(function(f) {
+              var inp = document.getElementById('channel-field-' + ch.name + '-' + f.id);
+              if (inp && inp.value.trim()) fields[f.id] = inp.value.trim();
+            });
+          }
+          channelsPayload.push({ name: ch.name, fields: fields });
+        });
+        return channelsPayload;
+      }
+
+      // Channels/skills the user configured in steps 3-4, captured at deploy time so the
+      // device-code finalize step can apply them after pairing (the pairing PTY runs with
+      // --skip-channels --skip-skills, so it never re-prompts for them).
+      var pendingDeviceConfig = { channels: [], skills: [] };
+
       window.deploy = function() {
         wizardLocked = true;
 
         // Interactive device-code pairing (ChatGPT/Codex) can't run through the
         // non-interactive /onboard/api/run endpoint — drive it via the PTY terminal instead.
+        // Capture the wizard's channels/skills first so they can be applied after pairing.
         if (isDeviceCodeChoice()) {
+          pendingDeviceConfig = { channels: collectChannelsPayload(), skills: selectedSkills };
           runDeviceCodePairing();
           return;
         }
@@ -2567,18 +2591,7 @@ export function getSetupPageHTML({ isConfigured, gatewayInfo, password, stateDir
         }
 
         // Build channels array from enabled channels
-        var channelsPayload = [];
-        channelGroups.forEach(function(ch) {
-          if (!enabledChannels[ch.name]) return;
-          var fields = {};
-          if (ch.fields) {
-            ch.fields.forEach(function(f) {
-              var inp = document.getElementById('channel-field-' + ch.name + '-' + f.id);
-              if (inp && inp.value.trim()) fields[f.id] = inp.value.trim();
-            });
-          }
-          channelsPayload.push({ name: ch.name, fields: fields });
-        });
+        var channelsPayload = collectChannelsPayload();
 
         var payload = {
           authChoice: selectedAuthChoice,
@@ -2739,10 +2752,31 @@ export function getSetupPageHTML({ isConfigured, gatewayInfo, password, stateDir
       };
 
       function finishDevicePairing() {
-        setPairStatus('Pairing approved — applying configuration…', 'success');
-        // Point the primary model at the openai-codex provider, then restart the gateway so
+        // 1) Apply the channels (step 3) + skills (step 4) the wizard captured. The pairing
+        //    PTY ran with --skip-channels --skip-skills, so they weren't configured there;
+        //    the server's device-code branch applies them to the paired config without
+        //    re-running auth. Skip the call when nothing was selected.
+        var hasPending = (pendingDeviceConfig.channels && pendingDeviceConfig.channels.length) ||
+                         (pendingDeviceConfig.skills && pendingDeviceConfig.skills.length);
+        var applyConfig = hasPending
+          ? (setPairStatus('Pairing approved — applying your channels & skills…', 'success'),
+             fetch('/onboard/api/run?password=' + encodeURIComponent(password), {
+               method: 'POST', headers: { 'Content-Type': 'application/json' },
+               body: JSON.stringify({
+                 authChoice: selectedAuthChoice,
+                 channels: pendingDeviceConfig.channels,
+                 skills: pendingDeviceConfig.skills
+               })
+             }).then(function(r) { return r.json(); }).catch(function() { return {}; }))
+          : Promise.resolve({});
+
+        // 2) Point the primary model at the openai-codex provider, then restart the gateway so
         // it loads the new openai-codex OAuth profile.
-        fetch('/lite/api/config?password=' + encodeURIComponent(password))
+        applyConfig
+          .then(function() {
+            setPairStatus('Pairing approved — applying configuration…', 'success');
+            return fetch('/lite/api/config?password=' + encodeURIComponent(password));
+          })
           .then(function(r) { return r.json(); })
           .then(function(cfg) {
             cfg = cfg || {};
@@ -2772,7 +2806,7 @@ export function getSetupPageHTML({ isConfigured, gatewayInfo, password, stateDir
           })
           .catch(function() {})
           .then(function() {
-            setPairStatus('Done! Codex is connected and the gateway has restarted.', 'success');
+            setPairStatus('Done! Codex is connected, your channels are configured, and the gateway has restarted.', 'success');
             var dl = document.getElementById('pair-done-links');
             if (dl) dl.style.display = 'flex';
             wizardLocked = false;

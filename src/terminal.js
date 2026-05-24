@@ -21,7 +21,10 @@ const ONBOARD_COMMANDS = {
   default: ['onboard'],
   // ChatGPT/Codex device-code pairing. Interactive-only (refuses --non-interactive);
   // prints a URL + code the user approves in a browser while the container polls.
-  'codex-device': ['onboard', '--flow', 'quickstart', '--accept-risk', '--auth-choice', 'openai-codex-device-code']
+  // --skip-channels / --skip-skills: the wizard already collected channels (step 3) and
+  // skills (step 4); those are applied non-interactively after pairing via /onboard/api/run,
+  // so the PTY must NOT re-prompt for them — it should finish right after pairing.
+  'codex-device': ['onboard', '--flow', 'quickstart', '--accept-risk', '--auth-choice', 'openai-codex-device-code', '--skip-channels', '--skip-skills']
 };
 
 /**
