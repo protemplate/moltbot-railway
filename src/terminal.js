@@ -21,10 +21,13 @@ const ONBOARD_COMMANDS = {
   default: ['onboard'],
   // ChatGPT/Codex device-code pairing. Interactive-only (refuses --non-interactive);
   // prints a URL + code the user approves in a browser while the container polls.
-  // --skip-channels / --skip-skills: the wizard already collected channels (step 3) and
-  // skills (step 4); those are applied non-interactively after pairing via /onboard/api/run,
-  // so the PTY must NOT re-prompt for them — it should finish right after pairing.
-  'codex-device': ['onboard', '--flow', 'quickstart', '--accept-risk', '--auth-choice', 'openai-codex-device-code', '--skip-channels', '--skip-skills']
+  // The PTY must ONLY pair the Codex subscription and then finish — it must not run any of
+  // quickstart's other interactive steps. The web wizard already handles channels (step 3)
+  // and skills (step 4), applied after pairing via /onboard/api/run; it has no search/hook/UI
+  // steps. So skip all of them: --skip-channels --skip-skills --skip-search --skip-hooks
+  // --skip-ui. (--skip-bootstrap is intentionally NOT set so the default agent workspace is
+  // still created.)
+  'codex-device': ['onboard', '--flow', 'quickstart', '--accept-risk', '--auth-choice', 'openai-codex-device-code', '--skip-channels', '--skip-skills', '--skip-search', '--skip-hooks', '--skip-ui']
 };
 
 /**
