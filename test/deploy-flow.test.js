@@ -131,22 +131,56 @@ describe('E2E deploy flow', { timeout: 30000 }, () => {
   });
 
   describe('device-code auth choice', () => {
-    it('rejects deviceCode choices on the non-interactive run endpoint', async () => {
-      const res = await fetch(
-        `http://127.0.0.1:${server.port}/onboard/api/run?password=test-password`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ authChoice: 'openai-codex-device-code' }),
-        }
-      );
-      assert.equal(res.status, 400, 'device-code choice should be rejected with 400');
-      const body = await res.json();
-      assert.equal(body.success, false);
+    // Device pairing (ChatGPT/Codex) happens interactively in the PTY terminal with
+    // --skip-channels --skip-skills. The front-end then calls /onboard/api/run with the
+    // device-code choice to apply the wizard's channels/skills to the already-paired config,
+    // WITHOUT re-running onboard auth.
+    it('applies channels to the paired config without re-running auth', async () => {
+      // The earlier deploy tests already wrote a config into server.stateDir, standing in
+      // for the config the pairing terminal would have created.
+      const fixture = CHANNEL_FIXTURES['telegram'];
+      const res = await postRun(server.port, {
+        authChoice: 'openai-codex-device-code',
+        channels: [{ name: 'telegram', fields: fixture }],
+        skills: [],
+      });
+
+      assert.equal(res.success, true, `expected success, got: ${JSON.stringify(res.logs)}`);
       assert.ok(
-        body.logs.join(' ').toLowerCase().includes('device pairing'),
-        `expected a device-pairing message, got: ${JSON.stringify(body.logs)}`
+        res.logs.join(' ').toLowerCase().includes('device pairing detected'),
+        `expected a device-pairing-detected log, got: ${JSON.stringify(res.logs)}`
       );
+      // No onboard auth command should have been run for the device-code choice.
+      assert.ok(
+        !res.logs.join(' ').includes('> openclaw onboard '),
+        `device-code path must not re-run onboard, got: ${JSON.stringify(res.logs)}`
+      );
+      const config = readConfig(server.stateDir);
+      assert.ok(config.channels?.telegram, 'telegram channel should be configured');
+      assert.equal(config.channels.telegram.enabled, true);
+    });
+
+    it('reports pairing-needed when no config exists yet (fresh instance)', async () => {
+      const fresh = await startServer();
+      try {
+        const res = await fetch(
+          `http://127.0.0.1:${fresh.port}/onboard/api/run?password=test-password`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ authChoice: 'openai-codex-device-code', channels: [], skills: [] }),
+          }
+        );
+        assert.equal(res.status, 200);
+        const body = await res.json();
+        assert.equal(body.success, false);
+        assert.ok(
+          body.logs.join(' ').toLowerCase().includes('pairing'),
+          `expected a pairing-needed message, got: ${JSON.stringify(body.logs)}`
+        );
+      } finally {
+        fresh.cleanup();
+      }
     });
   });
 });

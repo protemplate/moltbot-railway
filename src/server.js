@@ -547,72 +547,78 @@ app.post('/onboard/api/run', authMiddleware, async (req, res) => {
     const { authChoice, authSecret, extraFieldValues, flow, channels: channelPayload, skills } = req.body;
     const logs = [];
 
-    // Device-code auth (e.g. ChatGPT/Codex pairing) is interactive-only: the CLI refuses
-    // --non-interactive and must run in a PTY so the user can approve the code in a browser.
-    // The front-end drives it via /onboard/ws?cmd=codex-device; reject it here so it never
-    // silently runs the wrong (no-auth) onboard command.
-    if (AUTH_OPTION_MAP[authChoice]?.deviceCode) {
-      return res.status(400).json({
-        success: false,
-        logs: [`Auth choice "${authChoice}" uses device pairing and must run in the interactive terminal, not the non-interactive setup endpoint.`]
-      });
-    }
-
-    // Build onboard command args
-    const onboardArgs = ['--non-interactive', '--accept-risk', '--json'];
-
-    if (flow) {
-      onboardArgs.push('--flow', flow);
-    }
-
     const opt = AUTH_OPTION_MAP[authChoice];
-    const flag = opt?.flag;
-    if (flag) {
-      if (Array.isArray(flag)) {
-        onboardArgs.push(...flag);
-        // For secretOptional providers (e.g. Plano), fall back to 'nokey' so the
-        // flag is always passed and onboard doesn't prompt interactively.
-        const secretVal = authSecret || (opt.secretOptional ? 'nokey' : null);
-        if (opt.secretFlag && secretVal) {
-          onboardArgs.push(opt.secretFlag, secretVal);
-        }
-      } else if (authSecret) {
-        onboardArgs.push(flag, authSecret);
-      }
-    }
+    const isDeviceCode = !!opt?.deviceCode;
+    const configFile = join(OPENCLAW_STATE_DIR, 'openclaw.json');
 
-    // Handle extra fields (e.g., Cloudflare account/gateway IDs)
-    if (opt?.extraFields && extraFieldValues) {
-      for (const field of opt.extraFields) {
-        if (field.noFlag) continue;
-        const val = extraFieldValues[field.id];
-        if (val && field.flag) {
-          onboardArgs.push(field.flag, val);
-        }
-      }
-    }
-
-    // Run onboard
-    logs.push('> openclaw onboard ' + onboardArgs.map(a => a.startsWith('--') ? a : '***').join(' '));
-    const onboardResult = await runCmd('onboard', onboardArgs);
-    if (onboardResult.stdout) logs.push(onboardResult.stdout.trim());
-    if (onboardResult.stderr) logs.push(onboardResult.stderr.trim());
-
-    if (onboardResult.code !== 0) {
-      // onboard always tries to verify the gateway connection after writing config.
-      // Since no gateway is running yet (we start it below), the verification fails
-      // and onboard exits non-zero. Check if config was actually written — if so,
-      // treat the gateway verification failure as non-fatal and continue.
-      const configFile = join(OPENCLAW_STATE_DIR, 'openclaw.json');
+    if (isDeviceCode) {
+      // Device-code auth (e.g. ChatGPT/Codex pairing) is interactive-only and runs in the PTY
+      // terminal (/onboard/ws?cmd=codex-device), which pairs with --skip-channels --skip-skills.
+      // By the time the front-end calls this endpoint, pairing has already written the base
+      // config + auth profile. We must NOT re-run onboard here (it would refuse
+      // --non-interactive for a device-code choice, and could clobber the paired auth) — we
+      // only apply the wizard's channels & skills to the existing config below.
       if (!existsSync(configFile)) {
-        return res.json({ success: false, logs });
+        return res.json({
+          success: false,
+          logs: ['Device pairing has not completed yet — finish the pairing terminal first, then channels/skills can be applied.']
+        });
       }
-      logs.push('(Gateway verification skipped — gateway will be started next)');
+      logs.push('Device pairing detected — applying channels & skills to the paired config (no re-auth).');
+    } else {
+      // Build onboard command args
+      const onboardArgs = ['--non-interactive', '--accept-risk', '--json'];
+
+      if (flow) {
+        onboardArgs.push('--flow', flow);
+      }
+
+      const flag = opt?.flag;
+      if (flag) {
+        if (Array.isArray(flag)) {
+          onboardArgs.push(...flag);
+          // For secretOptional providers (e.g. Plano), fall back to 'nokey' so the
+          // flag is always passed and onboard doesn't prompt interactively.
+          const secretVal = authSecret || (opt.secretOptional ? 'nokey' : null);
+          if (opt.secretFlag && secretVal) {
+            onboardArgs.push(opt.secretFlag, secretVal);
+          }
+        } else if (authSecret) {
+          onboardArgs.push(flag, authSecret);
+        }
+      }
+
+      // Handle extra fields (e.g., Cloudflare account/gateway IDs)
+      if (opt?.extraFields && extraFieldValues) {
+        for (const field of opt.extraFields) {
+          if (field.noFlag) continue;
+          const val = extraFieldValues[field.id];
+          if (val && field.flag) {
+            onboardArgs.push(field.flag, val);
+          }
+        }
+      }
+
+      // Run onboard
+      logs.push('> openclaw onboard ' + onboardArgs.map(a => a.startsWith('--') ? a : '***').join(' '));
+      const onboardResult = await runCmd('onboard', onboardArgs);
+      if (onboardResult.stdout) logs.push(onboardResult.stdout.trim());
+      if (onboardResult.stderr) logs.push(onboardResult.stderr.trim());
+
+      if (onboardResult.code !== 0) {
+        // onboard always tries to verify the gateway connection after writing config.
+        // Since no gateway is running yet (we start it below), the verification fails
+        // and onboard exits non-zero. Check if config was actually written — if so,
+        // treat the gateway verification failure as non-fatal and continue.
+        if (!existsSync(configFile)) {
+          return res.json({ success: false, logs });
+        }
+        logs.push('(Gateway verification skipped — gateway will be started next)');
+      }
     }
 
     // Patch custom provider fields that the CLI doesn't handle (provider name, context window)
     // OpenClaw stores providers at config.models.providers.<key> with models as array of objects
-    const configFile = join(OPENCLAW_STATE_DIR, 'openclaw.json');
     if (existsSync(configFile) && extraFieldValues) {
       try {
         const config = JSON.parse(readFileSync(configFile, 'utf8'));
