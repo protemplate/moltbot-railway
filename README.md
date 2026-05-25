@@ -47,7 +47,7 @@ Includes a terminal mode for advanced users who prefer the full CLI experience.
 | Provider | Description |
 |----------|-------------|
 | **Anthropic** | Claude Opus, Sonnet, Haiku |
-| **OpenAI** | GPT-4o, o1, o3, DALL-E |
+| **OpenAI** | GPT-4o, o1, o3, DALL-E — API key or ChatGPT/Codex subscription pairing |
 | **Google / Gemini** | Gemini Pro, Flash, Ultra |
 | **OpenRouter** | Multi-provider gateway |
 | **MiniMax** | MiniMax M2.1 models |
@@ -243,6 +243,20 @@ Access at `/onboard` with your setup password.
 ### AI Provider Configuration
 
 Select from 14 providers. Popular providers (Anthropic, OpenAI, Google/Gemini, OpenRouter) are shown first. Enter your API key and the wizard writes the configuration directly.
+
+#### ChatGPT / Codex Subscription Pairing
+
+If you have a ChatGPT/Codex subscription, you can connect it without an API key — straight from the browser, even on a headless Railway container. Pick **OpenAI Codex (subscription)** as your provider and the wizard runs OpenAI's device-code flow for you:
+
+1. Click **Open auth page** and sign in with your ChatGPT/Codex subscription.
+2. Enter the one-time code the wizard shows you (expires in 15 minutes).
+3. Keep the tab open — it polls for approval and finishes automatically.
+
+![ChatGPT / Codex subscription pairing in the onboarding wizard](https://somi-public-assets.s3.ap-southeast-1.amazonaws.com/railway/openclaw-onboard-openai-sub.jpg)
+
+Once you approve, the wizard applies the channels and skills you picked in earlier steps, fixes the model prefix (`openai-codex/...`), and restarts the gateway — no re-prompting and no terminal output to copy. When it's done you get **Open Lite Panel** and **Open OpenClaw Gateway Dashboard** buttons.
+
+![Codex pairing finished — channels configured and gateway restarted](https://somi-public-assets.s3.ap-southeast-1.amazonaws.com/railway/openclaw-onboard-openai-sub-finish.png)
 
 ### Channel Configuration
 
