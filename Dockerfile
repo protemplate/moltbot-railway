@@ -28,7 +28,7 @@ COPY src/ ./src/
 FROM node:24-bookworm-slim AS runtime
 
 # Build args for version and optional features
-ARG OPENCLAW_VERSION=2026.3.28
+ARG OPENCLAW_VERSION=2026.5.27
 ARG INSTALL_SIGNAL_CLI=false
 ARG INSTALL_BROWSER=true
 ARG SIGNAL_CLI_VERSION=0.13.24

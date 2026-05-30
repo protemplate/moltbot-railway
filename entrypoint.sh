@@ -63,10 +63,12 @@ if [ "$(id -u)" = "0" ]; then
 fi
 
 # Seed the persistent npm prefix from the Docker-baked install on first boot.
-# If the prefix was auto-seeded previously and still matches that seeded
-# version, refresh it on redeploys so new image versions become active.
-# If the runtime version differs from the seed marker, treat it as user-managed
-# and leave it alone.
+# On redeploys, refresh the persistent install whenever the Docker-baked
+# version is strictly NEWER than the version on the volume (upgrade-only).
+# This makes "bump OPENCLAW_VERSION + redeploy" the canonical update path,
+# even after a prior in-app upgrade. We never downgrade: if the volume copy
+# is newer than the baked image (e.g. a user ran a newer in-app upgrade),
+# it is treated as user-managed and left alone.
 SEEDED_NPM_PREFIX="false"
 BAKED_VERSION="$(node -e "try{const p=require(process.argv[1]);process.stdout.write(p.version||'')}catch{}" "$BAKED_MODULE_DIR/package.json")"
 RUNTIME_VERSION=""
@@ -149,12 +151,20 @@ if [ -f "$SEED_MARKER" ]; then
     SEEDED_VERSION="$(tr -d '\n' < "$SEED_MARKER")"
 fi
 
+# version_gt A B → success (0) when A is strictly newer than B.
+# Uses `sort -V` so dot-separated CalVer (e.g. 2026.5.27 > 2026.5.20 > 2026.3.28)
+# compares numerically rather than lexically.
+version_gt() {
+    [ -n "$1" ] && [ -n "$2" ] && [ "$1" != "$2" ] && \
+        [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" = "$1" ]
+}
+
 SEED_ACTION=""
 if [ ! -f "$NPM_ENTRY" ] && [ -f "$BAKED_ENTRY" ]; then
     echo "Seeding persistent OpenClaw install into $NPM_PREFIX"
     SEED_ACTION="seed"
-elif [ -f "$NPM_ENTRY" ] && [ -n "$BAKED_VERSION" ] && [ -n "$SEEDED_VERSION" ] && [ "$RUNTIME_VERSION" = "$SEEDED_VERSION" ] && [ "$RUNTIME_VERSION" != "$BAKED_VERSION" ]; then
-    echo "Refreshing auto-seeded OpenClaw install to baked version $BAKED_VERSION"
+elif [ -f "$NPM_ENTRY" ] && version_gt "$BAKED_VERSION" "$RUNTIME_VERSION"; then
+    echo "Upgrading persistent OpenClaw install ${RUNTIME_VERSION:-unknown} -> baked $BAKED_VERSION (baked is newer)"
     SEED_ACTION="refresh"
 fi
 
@@ -178,6 +188,61 @@ ln -sfn /data/.local /home/openclaw/.local
 ln -sfn /data/.npm /home/openclaw/.npm
 chown -h openclaw:openclaw /home/openclaw/.openclaw /home/openclaw/.local /home/openclaw/.npm
 chown openclaw:openclaw /data/.local /data/.npm
+
+# Keep externally-installed OpenClaw plugins (e.g. @openclaw/codex, @openclaw/discord)
+# in lockstep with the core. Plugins live in a SEPARATE npm tree
+# ($OPENCLAW_STATE_DIR/npm) that the core seed/refresh above does not touch, so a
+# core upgrade can leave a stale plugin whose harness/provider contract no longer
+# matches core (e.g. an old codex harness that rejects the openai-codex provider,
+# surfacing as "Requested agent harness 'codex' does not support openai-codex/...").
+# Reinstall any official @openclaw/* plugin whose version drifts from the running core.
+sync_official_plugins() {
+    local target="$1"
+    [ -n "$target" ] || return 0
+
+    local plug_root="$OPENCLAW_STATE_DIR/npm/node_modules/@openclaw"
+    [ -d "$plug_root" ] || return 0
+
+    local specs=""
+    local d name pv
+    for d in "$plug_root"/*/; do
+        [ -f "${d}package.json" ] || continue
+        name="$(basename "$d")"
+        pv="$(node -e "try{process.stdout.write(require(process.argv[1]).version||'')}catch{}" "${d}package.json" 2>/dev/null || true)"
+        if [ -n "$pv" ] && [ "$pv" != "$target" ]; then
+            echo "OpenClaw plugin @openclaw/$name is $pv but core is $target; will resync"
+            specs="$specs @openclaw/$name@$target"
+        fi
+    done
+
+    [ -n "$specs" ] || return 0
+
+    local cmd="/opt/openclaw-bin/openclaw"
+    [ -x "$cmd" ] || cmd="openclaw"
+
+    # `plugins install` takes ONE spec and needs --force to overwrite an existing plugin.
+    echo "Resyncing OpenClaw plugins to core $target:$specs"
+    local spec ok=1
+    for spec in $specs; do
+        if [ "$(id -u)" = "0" ]; then
+            su -s /bin/bash openclaw -c "export HOME=/home/openclaw PATH=$NPM_BIN_DIR:/opt/openclaw-bin:\$PATH; timeout 300 $cmd plugins install --force '$spec'" \
+                && echo "Resynced $spec" || { echo "WARNING: failed to resync $spec (non-fatal)" >&2; ok=0; }
+        else
+            ( export PATH="$NPM_BIN_DIR:/opt/openclaw-bin:$PATH"; timeout 300 "$cmd" plugins install --force "$spec" ) \
+                && echo "Resynced $spec" || { echo "WARNING: failed to resync $spec (non-fatal)" >&2; ok=0; }
+        fi
+    done
+    [ "$ok" = 1 ] && echo "OpenClaw plugin resync complete" || echo "OpenClaw plugin resync finished with warnings" >&2
+    return 0
+}
+
+# Determine the core version that will actually run (post seed/refresh) and resync plugins.
+EFFECTIVE_CORE_VERSION="$BAKED_VERSION"
+if [ -f "$NPM_MODULE_DIR/package.json" ]; then
+    EFFECTIVE_CORE_VERSION="$(node -e "try{process.stdout.write(require(process.argv[1]).version||'')}catch{}" "$NPM_MODULE_DIR/package.json" 2>/dev/null || true)"
+    [ -n "$EFFECTIVE_CORE_VERSION" ] || EFFECTIVE_CORE_VERSION="$BAKED_VERSION"
+fi
+sync_official_plugins "$EFFECTIVE_CORE_VERSION" || true
 
 # Sync pre-bundled skills into the skills directory
 # Always overwrites bundled skill files to ensure Railway-aware instructions are current
