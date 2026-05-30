@@ -63,10 +63,12 @@ if [ "$(id -u)" = "0" ]; then
 fi
 
 # Seed the persistent npm prefix from the Docker-baked install on first boot.
-# If the prefix was auto-seeded previously and still matches that seeded
-# version, refresh it on redeploys so new image versions become active.
-# If the runtime version differs from the seed marker, treat it as user-managed
-# and leave it alone.
+# On redeploys, refresh the persistent install whenever the Docker-baked
+# version is strictly NEWER than the version on the volume (upgrade-only).
+# This makes "bump OPENCLAW_VERSION + redeploy" the canonical update path,
+# even after a prior in-app upgrade. We never downgrade: if the volume copy
+# is newer than the baked image (e.g. a user ran a newer in-app upgrade),
+# it is treated as user-managed and left alone.
 SEEDED_NPM_PREFIX="false"
 BAKED_VERSION="$(node -e "try{const p=require(process.argv[1]);process.stdout.write(p.version||'')}catch{}" "$BAKED_MODULE_DIR/package.json")"
 RUNTIME_VERSION=""
@@ -149,12 +151,20 @@ if [ -f "$SEED_MARKER" ]; then
     SEEDED_VERSION="$(tr -d '\n' < "$SEED_MARKER")"
 fi
 
+# version_gt A B → success (0) when A is strictly newer than B.
+# Uses `sort -V` so dot-separated CalVer (e.g. 2026.5.27 > 2026.5.20 > 2026.3.28)
+# compares numerically rather than lexically.
+version_gt() {
+    [ -n "$1" ] && [ -n "$2" ] && [ "$1" != "$2" ] && \
+        [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" = "$1" ]
+}
+
 SEED_ACTION=""
 if [ ! -f "$NPM_ENTRY" ] && [ -f "$BAKED_ENTRY" ]; then
     echo "Seeding persistent OpenClaw install into $NPM_PREFIX"
     SEED_ACTION="seed"
-elif [ -f "$NPM_ENTRY" ] && [ -n "$BAKED_VERSION" ] && [ -n "$SEEDED_VERSION" ] && [ "$RUNTIME_VERSION" = "$SEEDED_VERSION" ] && [ "$RUNTIME_VERSION" != "$BAKED_VERSION" ]; then
-    echo "Refreshing auto-seeded OpenClaw install to baked version $BAKED_VERSION"
+elif [ -f "$NPM_ENTRY" ] && version_gt "$BAKED_VERSION" "$RUNTIME_VERSION"; then
+    echo "Upgrading persistent OpenClaw install ${RUNTIME_VERSION:-unknown} -> baked $BAKED_VERSION (baked is newer)"
     SEED_ACTION="refresh"
 fi
 
