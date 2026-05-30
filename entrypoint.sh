@@ -189,6 +189,58 @@ ln -sfn /data/.npm /home/openclaw/.npm
 chown -h openclaw:openclaw /home/openclaw/.openclaw /home/openclaw/.local /home/openclaw/.npm
 chown openclaw:openclaw /data/.local /data/.npm
 
+# Keep externally-installed OpenClaw plugins (e.g. @openclaw/codex, @openclaw/discord)
+# in lockstep with the core. Plugins live in a SEPARATE npm tree
+# ($OPENCLAW_STATE_DIR/npm) that the core seed/refresh above does not touch, so a
+# core upgrade can leave a stale plugin whose harness/provider contract no longer
+# matches core (e.g. an old codex harness that rejects the openai-codex provider,
+# surfacing as "Requested agent harness 'codex' does not support openai-codex/...").
+# Reinstall any official @openclaw/* plugin whose version drifts from the running core.
+sync_official_plugins() {
+    local target="$1"
+    [ -n "$target" ] || return 0
+
+    local plug_root="$OPENCLAW_STATE_DIR/npm/node_modules/@openclaw"
+    [ -d "$plug_root" ] || return 0
+
+    local specs=""
+    local d name pv
+    for d in "$plug_root"/*/; do
+        [ -f "${d}package.json" ] || continue
+        name="$(basename "$d")"
+        pv="$(node -e "try{process.stdout.write(require(process.argv[1]).version||'')}catch{}" "${d}package.json" 2>/dev/null || true)"
+        if [ -n "$pv" ] && [ "$pv" != "$target" ]; then
+            echo "OpenClaw plugin @openclaw/$name is $pv but core is $target; will resync"
+            specs="$specs @openclaw/$name@$target"
+        fi
+    done
+
+    [ -n "$specs" ] || return 0
+
+    local cmd="/opt/openclaw-bin/openclaw"
+    [ -x "$cmd" ] || cmd="openclaw"
+
+    echo "Resyncing OpenClaw plugins to core $target:$specs"
+    if [ "$(id -u)" = "0" ]; then
+        su -s /bin/bash openclaw -c "export HOME=/home/openclaw PATH=$NPM_BIN_DIR:/opt/openclaw-bin:\$PATH; timeout 300 $cmd plugins install$specs" \
+            && echo "OpenClaw plugin resync complete" \
+            || echo "WARNING: OpenClaw plugin resync failed (non-fatal); continuing with existing plugins" >&2
+    else
+        ( export PATH="$NPM_BIN_DIR:/opt/openclaw-bin:$PATH"; timeout 300 "$cmd" plugins install$specs ) \
+            && echo "OpenClaw plugin resync complete" \
+            || echo "WARNING: OpenClaw plugin resync failed (non-fatal); continuing with existing plugins" >&2
+    fi
+    return 0
+}
+
+# Determine the core version that will actually run (post seed/refresh) and resync plugins.
+EFFECTIVE_CORE_VERSION="$BAKED_VERSION"
+if [ -f "$NPM_MODULE_DIR/package.json" ]; then
+    EFFECTIVE_CORE_VERSION="$(node -e "try{process.stdout.write(require(process.argv[1]).version||'')}catch{}" "$NPM_MODULE_DIR/package.json" 2>/dev/null || true)"
+    [ -n "$EFFECTIVE_CORE_VERSION" ] || EFFECTIVE_CORE_VERSION="$BAKED_VERSION"
+fi
+sync_official_plugins "$EFFECTIVE_CORE_VERSION" || true
+
 # Sync pre-bundled skills into the skills directory
 # Always overwrites bundled skill files to ensure Railway-aware instructions are current
 # (e.g. replaces upstream SKILL.md that references localhost with our $SEARXNG_URL version)
