@@ -220,16 +220,19 @@ sync_official_plugins() {
     local cmd="/opt/openclaw-bin/openclaw"
     [ -x "$cmd" ] || cmd="openclaw"
 
+    # `plugins install` takes ONE spec and needs --force to overwrite an existing plugin.
     echo "Resyncing OpenClaw plugins to core $target:$specs"
-    if [ "$(id -u)" = "0" ]; then
-        su -s /bin/bash openclaw -c "export HOME=/home/openclaw PATH=$NPM_BIN_DIR:/opt/openclaw-bin:\$PATH; timeout 300 $cmd plugins install$specs" \
-            && echo "OpenClaw plugin resync complete" \
-            || echo "WARNING: OpenClaw plugin resync failed (non-fatal); continuing with existing plugins" >&2
-    else
-        ( export PATH="$NPM_BIN_DIR:/opt/openclaw-bin:$PATH"; timeout 300 "$cmd" plugins install$specs ) \
-            && echo "OpenClaw plugin resync complete" \
-            || echo "WARNING: OpenClaw plugin resync failed (non-fatal); continuing with existing plugins" >&2
-    fi
+    local spec ok=1
+    for spec in $specs; do
+        if [ "$(id -u)" = "0" ]; then
+            su -s /bin/bash openclaw -c "export HOME=/home/openclaw PATH=$NPM_BIN_DIR:/opt/openclaw-bin:\$PATH; timeout 300 $cmd plugins install --force '$spec'" \
+                && echo "Resynced $spec" || { echo "WARNING: failed to resync $spec (non-fatal)" >&2; ok=0; }
+        else
+            ( export PATH="$NPM_BIN_DIR:/opt/openclaw-bin:$PATH"; timeout 300 "$cmd" plugins install --force "$spec" ) \
+                && echo "Resynced $spec" || { echo "WARNING: failed to resync $spec (non-fatal)" >&2; ok=0; }
+        fi
+    done
+    [ "$ok" = 1 ] && echo "OpenClaw plugin resync complete" || echo "OpenClaw plugin resync finished with warnings" >&2
     return 0
 }
 
